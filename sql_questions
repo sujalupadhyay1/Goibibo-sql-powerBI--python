@@ -1,0 +1,223 @@
+#Sql Query 
+
+Hotel footprint and tiering
+Assumes price_tier derived from city-specific quartiles.
+
+  WITH city_quartiles AS (
+  SELECT city,
+         percentile_cont(ARRAY[0.25,0.5,0.75]) WITHIN GROUP (ORDER BY price) AS qs
+  FROM hotel_data
+  GROUP BY city
+),
+labeled AS (
+  SELECT hd.city,
+         hd.id,
+         CASE
+           WHEN hd.price < (cq.qs)[1] THEN 'Budget'
+           WHEN hd.price < (cq.qs)[3] THEN 'Mid'
+           ELSE 'Luxury'
+         END AS price_tier
+  FROM hotel_data hd
+  JOIN city_quartiles cq USING (city)
+)
+SELECT city,
+       COUNT(*) AS hotels,
+       MODE() WITHIN GROUP (ORDER BY price_tier) AS most_common_tier
+FROM labeled
+GROUP BY city
+ORDER BY hotels DESC;
+-----------------------------------------------------------------------------------------------------------------------------------
+
+Price distribution analysis
+What’s the distribution of hotels across predefined price buckets?
+
+SELECT
+  width_bucket(price, 0, 10000, 10) AS bucket,
+  MIN(price) AS min_price,
+  MAX(price) AS max_price,
+  COUNT(*) AS hotel_count
+FROM hotel_data
+GROUP BY bucket
+ORDER BY bucket;
+----------------------------------------------------------------------------------------------------------------------------------
+Amenity popularity and impact
+If amenities are stored as text arrays; adapt split if comma-separated.
+  WITH explode AS (
+  SELECT id,
+         city,
+         rating,
+         price,
+         trim(both ' "' FROM unnest(string_to_array(amenities, ','))) AS amenity
+  FROM hotel_data
+)
+SELECT
+  amenity,
+  COUNT(DISTINCT id) AS hotels_with_amenity,
+  ROUND(AVG(price)::numeric,2) AS avg_price,
+  ROUND(AVG(rating)::numeric,2) AS avg_rating
+FROM explode
+GROUP BY amenity
+HAVING COUNT(DISTINCT id) >= 20
+ORDER BY hotels_with_amenity DESC;
+----------------------------------------------------------------------------------------------------------------------------------
+City-Level Competitiveness
+In top 5 cities, what’s the variation in hotel pricing and amenity offerings?
+WITH city_sizes AS (
+  SELECT city, COUNT(*) AS hotels
+  FROM hotel_data
+  GROUP BY city
+),
+top5 AS (
+  SELECT city FROM city_sizes ORDER BY hotels DESC LIMIT 5
+)
+SELECT
+  hd.city,
+  percentile_cont(0.1) WITHIN GROUP (ORDER BY hd.price) AS p10_price,
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY hd.price) AS p50_price,
+  percentile_cont(0.9) WITHIN GROUP (ORDER BY hd.price) AS p90_price,
+  COUNT(*) FILTER (WHERE POSITION('Wifi' IN amenities) > 0) AS wifi_hotels,
+  COUNT(*) FILTER (WHERE POSITION('Breakfast' IN amenities) > 0) AS breakfast_hotels,
+  COUNT(*) AS total_hotels
+FROM hotel_data hd
+JOIN top5 t USING (city)
+GROUP BY hd.city
+ORDER BY p50_price DESC;
+-------------------------------------------------------------------------------------------------------------------------
+Landmark Proximity Advantage
+Do hotels near major landmarks command premium pricing or ratings?
+SELECT
+  hd.city,
+  ROUND(AVG(CASE WHEN hl.distance_num <= 5 THEN hd.price END)::numeric,2) AS avg_price_near,
+  ROUND(AVG(CASE WHEN hl.distance_num > 5 THEN hd.price END)::numeric,2)  AS avg_price_far,
+  ROUND(AVG(CASE WHEN hl.distance_num <= 5 THEN hd.rating END)::numeric,2) AS avg_rating_near,
+  ROUND(AVG(CASE WHEN hl.distance_num > 5 THEN hd.rating END)::numeric,2)  AS avg_rating_far
+FROM hotel_data hd
+LEFT JOIN hotel_landmarks hl ON hl.city = hd.city
+GROUP BY hd.city
+ORDER BY hd.city;
+------------------------------------------------------------------------------------------------------------------------------
+Rating distribution across chains/brands
+If brand column isn’t present, use Name prefix or a derived brand dimension.
+  SELECT
+  COALESCE(brand, split_part(name, ' ', 1)) AS brand_guess,
+  ROUND(AVG(rating)::numeric,2) AS avg_rating,
+  COUNT(*) AS listings
+FROM hotel_data
+GROUP BY brand_guess
+HAVING COUNT(*) >= 10
+ORDER BY avg_rating DESC, listings DESC;
+
+--------------------------------------------------------------------------------------------------------------------------------
+Budget vs luxury performance
+Global tiers using overall quartiles.
+  WITH qs AS (
+  SELECT percentile_cont(ARRAY[0.25,0.5,0.75]) WITHIN GROUP (ORDER BY price) AS q
+  FROM hotel_data
+),
+tiered AS (
+  SELECT
+    hd.id,
+    CASE
+      WHEN hd.price < (q)[1] THEN 'Budget'
+      WHEN hd.price < (q)[3] THEN 'Mid'
+      ELSE 'Luxury'
+    END AS tier,
+    hd.rating
+  FROM hotel_data hd CROSS JOIN qs
+),
+rv AS (
+  SELECT hr.hotelid, COUNT(*) AS reviews
+  FROM hotel_review hr
+  GROUP BY hr.hotelid
+)
+SELECT
+  t.tier,
+  ROUND(AVG(t.rating)::numeric,2) AS avg_rating,
+  ROUND(AVG(rv.reviews)::numeric,1) AS avg_reviews
+FROM tiered t
+LEFT JOIN rv ON rv.hotelid = t.id
+GROUP BY t.tier
+ORDER BY CASE t.tier WHEN 'Budget' THEN 1 WHEN 'Mid' THEN 2 ELSE 3 END;
+-------------------------------------------------------------------------------------------------------------------
+Review Volume Analysis
+Which hotels receive the most reviews, and how do they fare in rating trends?
+
+WITH rev_month AS (
+  SELECT
+    hr.hotelid,
+    date_trunc('month', hr.submittedat::date) AS month,
+    COUNT(*) AS reviews,
+    AVG(hr.rating) AS avg_rating
+  FROM hotel_review hr
+  GROUP BY hr.hotelid, date_trunc('month', hr.submittedat::date)
+),
+tot AS (
+  SELECT hotelid, SUM(reviews) AS total_reviews
+  FROM rev_month
+  GROUP BY hotelid
+),
+trend AS (
+  SELECT hotelid,
+         month,
+         avg_rating,
+         avg_rating - LAG(avg_rating) OVER (PARTITION BY hotelid ORDER BY month) AS delta
+  FROM rev_month
+)
+SELECT
+  hd.name,
+  hd.city,
+  t.total_reviews,
+  ROUND(AVG(tr.avg_rating)::numeric,2) AS avg_rating_over_time,
+  ROUND(AVG(tr.delta)::numeric,3) AS avg_monthly_rating_change
+FROM tot t
+JOIN hotel_data hd ON hd.id = t.hotelid
+JOIN trend tr ON tr.hotelid = t.hotelid
+GROUP BY hd.name, hd.city, t.total_reviews
+ORDER BY t.total_reviews DESC
+LIMIT 25;
+-------------------------------------------------------------------------------------------------------------------------
+
+Emerging locations spotlight
+MoM listing growth and compare ratings to mature markets.
+  WITH monthly AS (
+  SELECT
+    hd.city,
+    date_trunc('month', hr.submittedat::date) AS month,
+    COUNT(DISTINCT hd.id) AS listings
+  FROM hotel_data hd
+  JOIN hotel_review hr ON hr.hotelid = hd.id
+  GROUP BY hd.city, date_trunc('month', hr.submittedat::date)
+),
+growth AS (
+  SELECT
+    city,
+    month,
+    listings,
+    (listings - LAG(listings) OVER (PARTITION BY city ORDER BY month))::float
+      / NULLIF(LAG(listings) OVER (PARTITION BY city ORDER BY month),0) AS mom_growth
+  FROM monthly
+),
+city_rating AS (
+  SELECT hd.city, AVG(hr.rating) AS avg_review_rating
+  FROM hotel_review hr
+  JOIN hotel_data hd ON hd.id = hr.hotelid
+  GROUP BY hd.city
+),
+ranked AS (
+  SELECT city,
+         AVG(mom_growth) AS avg_mom_growth
+  FROM growth
+  WHERE month >= date_trunc('month', CURRENT_DATE) - interval '6 months'
+  GROUP BY city
+)
+SELECT
+  r.city,
+  ROUND(r.avg_mom_growth::numeric,4) AS avg_mom_growth_6m,
+  ROUND(cr.avg_review_rating::numeric,2) AS avg_rating,
+  NTILE(4) OVER (ORDER BY r.avg_mom_growth DESC) AS growth_quartile
+FROM ranked r
+JOIN city_rating cr USING (city)
+ORDER BY avg_mom_growth_6m DESC
+LIMIT 15;
+--------------------------------------------------------------------------------------------------------------------------------------------
+  
