@@ -1,7 +1,7 @@
 #Sql Query 
 
-Hotel footprint and tiering
-Assumes price_tier derived from city-specific quartiles.
+Hotel footprint and tiering 
+Assumes price_tier derived from city-specific quartiles.  ---------- question -------------
 
   WITH city_quartiles AS (
   SELECT city,
@@ -29,7 +29,7 @@ ORDER BY hotels DESC;
 -----------------------------------------------------------------------------------------------------------------------------------
 
 Price distribution analysis
-What’s the distribution of hotels across predefined price buckets?
+What’s the distribution of hotels across predefined price buckets? ---------- question -------------
 
 SELECT
   width_bucket(price, 0, 10000, 10) AS bucket,
@@ -41,7 +41,7 @@ GROUP BY bucket
 ORDER BY bucket;
 ----------------------------------------------------------------------------------------------------------------------------------
 Amenity popularity and impact
-If amenities are stored as text arrays; adapt split if comma-separated.
+If amenities are stored as text arrays; adapt split if comma-separated.  ---------- question -------------
   WITH explode AS (
   SELECT id,
          city,
@@ -61,7 +61,7 @@ HAVING COUNT(DISTINCT id) >= 20
 ORDER BY hotels_with_amenity DESC;
 ----------------------------------------------------------------------------------------------------------------------------------
 City-Level Competitiveness
-In top 5 cities, what’s the variation in hotel pricing and amenity offerings?
+In top 5 cities, what’s the variation in hotel pricing and amenity offerings? ---------- question -------------
 WITH city_sizes AS (
   SELECT city, COUNT(*) AS hotels
   FROM hotel_data
@@ -84,7 +84,7 @@ GROUP BY hd.city
 ORDER BY p50_price DESC;
 -------------------------------------------------------------------------------------------------------------------------
 Landmark Proximity Advantage
-Do hotels near major landmarks command premium pricing or ratings?
+Do hotels near major landmarks command premium pricing or ratings? ---------- question -------------
 SELECT
   hd.city,
   ROUND(AVG(CASE WHEN hl.distance_num <= 5 THEN hd.price END)::numeric,2) AS avg_price_near,
@@ -97,7 +97,7 @@ GROUP BY hd.city
 ORDER BY hd.city;
 ------------------------------------------------------------------------------------------------------------------------------
 Rating distribution across chains/brands
-If brand column isn’t present, use Name prefix or a derived brand dimension.
+If brand column isn’t present, use Name prefix or a derived brand dimension.  ---------- question -------------
   SELECT
   COALESCE(brand, split_part(name, ' ', 1)) AS brand_guess,
   ROUND(AVG(rating)::numeric,2) AS avg_rating,
@@ -109,7 +109,7 @@ ORDER BY avg_rating DESC, listings DESC;
 
 --------------------------------------------------------------------------------------------------------------------------------
 Budget vs luxury performance
-Global tiers using overall quartiles.
+Global tiers using overall quartiles.  ---------- question -------------
   WITH qs AS (
   SELECT percentile_cont(ARRAY[0.25,0.5,0.75]) WITHIN GROUP (ORDER BY price) AS q
   FROM hotel_data
@@ -140,7 +140,7 @@ GROUP BY t.tier
 ORDER BY CASE t.tier WHEN 'Budget' THEN 1 WHEN 'Mid' THEN 2 ELSE 3 END;
 -------------------------------------------------------------------------------------------------------------------
 Review Volume Analysis
-Which hotels receive the most reviews, and how do they fare in rating trends?
+Which hotels receive the most reviews, and how do they fare in rating trends?  ---------- question -------------
 
 WITH rev_month AS (
   SELECT
@@ -178,7 +178,7 @@ LIMIT 25;
 -------------------------------------------------------------------------------------------------------------------------
 
 Emerging locations spotlight
-MoM listing growth and compare ratings to mature markets.
+MoM listing growth and compare ratings to mature markets. -------------- question -------------
   WITH monthly AS (
   SELECT
     hd.city,
